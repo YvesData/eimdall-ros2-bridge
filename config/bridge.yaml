@@ -1,0 +1,8 @@
+eimdall_bridge:
+  ros__parameters:
+    robot_id:             "robot-01"
+    bridge_id:            "ros2-bridge"
+    edge_url:             "https://127.0.0.1:8787"
+    token_file:           "/etc/eimdall/eimdall-local-service.token"
+    ca_cert:              "/etc/eimdall/tls/edge-local-ca.crt"
+    heartbeat_interval_s: 5.0
