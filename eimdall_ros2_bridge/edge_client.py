@@ -3,9 +3,26 @@ import json
 import ssl
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from pathlib import Path
 from typing import Any, Dict, Optional
+
+_LOOPBACK_HOSTS = {"localhost", "127.0.0.1", "::1"}
+
+
+def _validate_edge_url(url: str) -> str:
+    """Reject non-loopback URLs to prevent SSRF and token exfiltration."""
+    parsed = urllib.parse.urlparse(url)
+    if parsed.scheme not in ("http", "https"):
+        raise ValueError(f"edge_url scheme must be http or https, got '{parsed.scheme}'")
+    host = (parsed.hostname or "").lower()
+    if host not in _LOOPBACK_HOSTS:
+        raise ValueError(
+            f"edge_url host '{host}' is not a loopback address. "
+            "The Edge service runs locally — remote URLs are rejected."
+        )
+    return url.rstrip("/")
 
 
 class EdgeClient:
@@ -16,7 +33,7 @@ class EdgeClient:
         ca_cert: Optional[str] = None,
         timeout_s: float = 2.0,
     ) -> None:
-        self._base = edge_url.rstrip("/")
+        self._base = _validate_edge_url(edge_url)
         self._timeout = timeout_s
         self._ssl_ctx = self._build_ssl(ca_cert)
 
@@ -24,6 +41,8 @@ class EdgeClient:
         if not token_path.exists():
             raise FileNotFoundError(f"Edge token file not found: {token_file}")
         self._token = token_path.read_text().strip()
+        if not self._token:
+            raise ValueError(f"Edge token file is empty: {token_file}")
 
     def ingest(
         self,

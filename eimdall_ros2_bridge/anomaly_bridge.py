@@ -36,9 +36,12 @@ class AnomalyBridge(LifecycleNode):
     # ── Lifecycle callbacks ─────────────────────────────────────────────────
 
     def on_configure(self, state: State) -> TransitionCallbackReturn:
-        self._anomaly_path = Path(
-            self.get_parameter("anomaly_path").get_parameter_value().string_value
-        )
+        raw_path = self.get_parameter("anomaly_path").get_parameter_value().string_value
+        try:
+            self._anomaly_path = Path(raw_path).resolve()
+        except (ValueError, OSError) as exc:
+            self.get_logger().error(f"invalid anomaly_path '{raw_path}': {exc}")
+            return TransitionCallbackReturn.FAILURE
         self._poll_period = (
             self.get_parameter("poll_period_sec").get_parameter_value().double_value
         )

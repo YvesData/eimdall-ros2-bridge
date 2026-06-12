@@ -41,9 +41,12 @@ class HealthBridge(LifecycleNode):
     # ── Lifecycle callbacks ─────────────────────────────────────────────────
 
     def on_configure(self, state: State) -> TransitionCallbackReturn:
-        self._health_path = Path(
-            self.get_parameter("health_path").get_parameter_value().string_value
-        )
+        raw_path = self.get_parameter("health_path").get_parameter_value().string_value
+        try:
+            self._health_path = Path(raw_path).resolve()
+        except (ValueError, OSError) as exc:
+            self.get_logger().error(f"invalid health_path '{raw_path}': {exc}")
+            return TransitionCallbackReturn.FAILURE
         self._publish_period = (
             self.get_parameter("publish_period_sec").get_parameter_value().double_value
         )

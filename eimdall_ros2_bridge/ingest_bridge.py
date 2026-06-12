@@ -1,7 +1,28 @@
 """IngestBridge — ROS 2 sensor topics → Eimdall Edge ingest."""
 import math
+import re
 import time
-from typing import List, Optional
+from typing import Dict, List, Optional
+
+_SAFE_ID = re.compile(r"^[a-zA-Z0-9_\-\.]{1,64}$")
+_MAX_SCAN_SAMPLES = 1_000
+_ERRORS_WINDOW_S = 300.0  # 5-minute sliding window for error rate reporting
+
+
+def _sanitize_id(name: str) -> Optional[str]:
+    """Return name if it contains only safe identifier characters, else None."""
+    return name if _SAFE_ID.match(name) else None
+
+
+def _finite(v: float) -> Optional[float]:
+    """Return v if finite, else None (guards against NaN/Inf → invalid JSON)."""
+    return v if math.isfinite(v) else None
+
+
+def _safe_values(raw: Dict[str, float]) -> Optional[Dict[str, float]]:
+    """Drop NaN/Inf entries; return None if no finite values remain."""
+    out = {k: v for k, v in raw.items() if math.isfinite(v)}
+    return out if out else None
 
 import rclpy
 from rclpy.lifecycle import LifecycleNode, State, TransitionCallbackReturn
@@ -40,6 +61,7 @@ class IngestBridge(LifecycleNode):
         self._start_ts: float = 0.0
         self._readings: int = 0
         self._errors: int = 0
+        self._error_timestamps: List[float] = []  # for 5-min sliding window
 
     # ── Lifecycle callbacks ─────────────────────────────────────────────────
 
@@ -124,7 +146,7 @@ class IngestBridge(LifecycleNode):
     def _on_imu(self, msg: Imu) -> None:
         a = msg.linear_acceleration
         g = msg.angular_velocity
-        self._ingest("imu", "imu", {
+        values = _safe_values({
             "accel_x_g": a.x / 9.81,
             "accel_y_g": a.y / 9.81,
             "accel_z_g": a.z / 9.81,
@@ -132,25 +154,33 @@ class IngestBridge(LifecycleNode):
             "gyro_y_dps": math.degrees(g.y),
             "gyro_z_dps": math.degrees(g.z),
         })
+        if values:
+            self._ingest("imu", "imu", values)
 
     def _on_battery(self, msg: BatteryState) -> None:
-        self._ingest("battery", "battery", {
+        values = _safe_values({
             "voltage_v": msg.voltage,
             "current_a": msg.current,
             "soc_pct": msg.percentage * 100.0,
             "temp_c": msg.temperature,
         })
+        if values:
+            self._ingest("battery", "battery", values)
 
     def _on_odom(self, msg: Odometry) -> None:
         v = msg.twist.twist.linear
-        self._ingest("odom", "encoder", {
+        values = _safe_values({
             "velocity_x_ms": v.x,
             "velocity_y_ms": v.y,
             "angular_z_rps": msg.twist.twist.angular.z,
         })
+        if values:
+            self._ingest("odom", "encoder", values)
 
     def _on_scan(self, msg: LaserScan) -> None:
-        valid = [r for r in msg.ranges if msg.range_min < r < msg.range_max]
+        # Clamp to _MAX_SCAN_SAMPLES to prevent DoS via oversized range arrays
+        samples = msg.ranges[:_MAX_SCAN_SAMPLES]
+        valid = [r for r in samples if math.isfinite(r) and msg.range_min < r < msg.range_max]
         if not valid:
             return
         self._ingest("lidar", "lidar", {
@@ -161,13 +191,17 @@ class IngestBridge(LifecycleNode):
 
     def _on_joint_states(self, msg: JointState) -> None:
         for i, name in enumerate(msg.name):
-            values: dict = {}
-            if i < len(msg.velocity) and not math.isnan(msg.velocity[i]):
-                values["velocity_rps"] = msg.velocity[i]
-            if i < len(msg.effort) and not math.isnan(msg.effort[i]):
-                values["torque_nm"] = msg.effort[i]
+            safe_name = _sanitize_id(name)
+            if safe_name is None:
+                continue
+            raw: Dict[str, float] = {}
+            if i < len(msg.velocity):
+                raw["velocity_rps"] = msg.velocity[i]
+            if i < len(msg.effort):
+                raw["torque_nm"] = msg.effort[i]
+            values = _safe_values(raw)
             if values:
-                self._ingest(f"joint_{name}", "motor", values)
+                self._ingest(f"joint_{safe_name}", "motor", values)
 
     # ── Heartbeat & diagnostics ─────────────────────────────────────────────
 
@@ -175,12 +209,15 @@ class IngestBridge(LifecycleNode):
         if self._client is None:
             return
         uptime = int(time.monotonic() - self._start_ts)
-        errors_snapshot = self._errors
+        now = time.monotonic()
+        cutoff = now - _ERRORS_WINDOW_S
+        self._error_timestamps = [t for t in self._error_timestamps if t > cutoff]
+        errors_5m = len(self._error_timestamps)
         ok = self._client.heartbeat(
             robot_id=self._robot_id,
             bridge_id=self._bridge_id,
             uptime_s=uptime,
-            errors_5m=errors_snapshot,
+            errors_5m=errors_5m,
         )
         if not ok:
             self.get_logger().warning("heartbeat to Edge failed")
@@ -220,6 +257,7 @@ class IngestBridge(LifecycleNode):
             self._readings += 1
         else:
             self._errors += 1
+            self._error_timestamps.append(time.monotonic())
 
 
 def main(args=None) -> None:
