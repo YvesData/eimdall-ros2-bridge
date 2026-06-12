@@ -222,6 +222,79 @@ Typical robot deployment:
 
 ---
 
+## Hardware integration
+
+### ESP32 + MPU6050 (`hardware/esp32_mpu6050/`)
+
+A minimal Arduino sketch for an **ESP32** wired to an **MPU6050** IMU (I²C on pins 21/22). The sketch reads accelerometer, gyroscope and temperature at 10 Hz and prints one JSON line per sample on the serial port at 115 200 baud:
+
+```json
+{"ts_ms":1234,"ax_g":0.0012,"ay_g":-0.0034,"az_g":1.0001,"gx_dps":0.123,"gy_dps":-0.045,"gz_dps":0.002,"temp_c":28.50}
+```
+
+The Eimdall Edge runtime can read this stream directly when configured with a serial sensor source pointing to the device's USB port (e.g. `/dev/ttyUSB0`). No additional driver or middleware is required.
+
+**Dependencies (Arduino Library Manager):**
+- `Adafruit MPU6050`
+- `Adafruit Unified Sensor`
+
+This sketch is intentionally minimal — it only handles the sensor read loop. TLS, authentication and data forwarding are handled by the Edge runtime, not the microcontroller.
+
+---
+
+## Monitoring
+
+Configuration files for integrating Eimdall into a standard observability stack are in `monitoring/`.
+
+### Grafana dashboard (`monitoring/grafana-dashboard.json`)
+
+A ready-to-import Grafana dashboard (schema v38, tested on Grafana 10+) showing:
+
+- Fleet health overview — active robots, anomaly rate, sensor coverage
+- Per-robot health score timeline
+- Anomaly events by severity
+- Edge runtime metrics — ingest rate, parse errors, spool depth
+
+**Import:** Grafana → Dashboards → Import → upload `grafana-dashboard.json`. Select a Prometheus datasource connected to the Eimdall Central metrics endpoint (default port `9091`).
+
+### OpenTelemetry Collector (`monitoring/otel-collector-config.yaml`)
+
+A reference OTel Collector configuration that:
+
+- Scrapes Eimdall Central's Prometheus endpoint (supports mTLS + bearer token)
+- Receives traces pushed by Eimdall Central via OTLP gRPC/HTTP
+- Re-exports to any compatible backend — Grafana Tempo, Jaeger, Datadog, or others (commented stanzas included)
+
+```bash
+docker run --rm \
+  -v $(pwd)/monitoring/otel-collector-config.yaml:/etc/otelcol/config.yaml \
+  -v /etc/eimdall/certs:/etc/otelcol/certs \
+  -v /etc/eimdall/eimdall-token:/etc/otelcol/eimdall-token \
+  -p 4317:4317 -p 4318:4318 \
+  otel/opentelemetry-collector-contrib:latest
+```
+
+Replace `EIMDALL_HOST` and `GRAFANA_TEMPO_HOST` placeholders with your actual hostnames before use.
+
+---
+
+## Repository layout
+
+```text
+eimdall_ros2_bridge/
+├── eimdall_ros2_bridge/    Python package — lifecycle nodes + edge client
+├── msg/                    Custom ROS 2 message definitions
+├── launch/                 Launch file with auto configure+activate
+├── config/                 Parameter YAML for all three nodes
+├── hardware/
+│   └── esp32_mpu6050/      Arduino sketch — ESP32 + MPU6050 → Edge serial
+└── monitoring/
+    ├── grafana-dashboard.json       Grafana fleet dashboard
+    └── otel-collector-config.yaml  OTel Collector for metrics + traces
+```
+
+---
+
 ## License
 
 Proprietary — © Eimdall / Data Agility. All rights reserved.

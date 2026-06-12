@@ -1,0 +1,103 @@
+# OpenTelemetry Collector — Configuration Eimdall
+# ================================================
+# Ce fichier configure le Collector pour :
+#   - Recevoir les métriques Eimdall via son endpoint Prometheus (scrape mTLS)
+#   - Recevoir les traces Eimdall via OTLP gRPC (push natif)
+#   - Réexporter vers n'importe quel backend OTel (Grafana Tempo, Jaeger, Datadog…)
+#
+# Usage :
+#   docker run --rm -v $(pwd)/otel-collector-config.yaml:/etc/otelcol/config.yaml \
+#              -v /etc/eimdall/certs:/etc/otelcol/certs \
+#              -v /etc/eimdall/eimdall-token:/etc/otelcol/eimdall-token \
+#              -p 4317:4317 -p 4318:4318 \
+#              otel/opentelemetry-collector-contrib:latest
+
+receivers:
+  # ── Prometheus scrape de l'endpoint Eimdall (port 9091, mTLS + bearer token) ──
+  prometheus:
+    config:
+      scrape_configs:
+        - job_name: eimdall
+          scrape_interval: 30s
+          scheme: https
+          tls_config:
+            # CA qui a signé le cert serveur Eimdall
+            ca_file: /etc/otelcol/certs/eimdall-ca.pem
+            # Cert client (mTLS) — doit être signé par EIMDALL_METRICS_CLIENT_CA
+            cert_file: /etc/otelcol/certs/collector-client.pem
+            key_file:  /etc/otelcol/certs/collector-client-key.pem
+          authorization:
+            type: Bearer
+            credentials_file: /etc/otelcol/eimdall-token  # contient EIMDALL_METRICS_TOKEN
+          static_configs:
+            - targets: ["EIMDALL_HOST:9091"]     # ← remplacer par l'IP/hostname Central
+
+  # ── OTLP gRPC — reçoit les traces poussées par Eimdall Central ──
+  otlp:
+    protocols:
+      grpc:
+        endpoint: 0.0.0.0:4317   # EIMDALL_OTEL_ENDPOINT doit pointer ici
+      http:
+        endpoint: 0.0.0.0:4318
+
+processors:
+  # Batcher : accumule pendant 5s avant envoi (réduit les connexions backend)
+  batch:
+    timeout: 5s
+    send_batch_size: 256
+
+  # Enrichit chaque span/métrique avec des attributs ressource standard
+  resource:
+    attributes:
+      - key: deployment.environment
+        value: production
+        action: insert
+
+exporters:
+  # ── Grafana Tempo (traces) ──────────────────────────────────────────────────
+  otlp/tempo:
+    endpoint: GRAFANA_TEMPO_HOST:4317  # ← remplacer
+    tls:
+      insecure: false
+      # ca_file: /etc/otelcol/certs/tempo-ca.pem   # décommenter si Tempo est en TLS
+
+  # ── Grafana Mimir / Prometheus remote_write (métriques) ────────────────────
+  # prometheusremotewrite:
+  #   endpoint: http://MIMIR_HOST:9009/api/v1/push
+  #   tls:
+  #     insecure: true
+
+  # ── Jaeger (traces) ─────────────────────────────────────────────────────────
+  # otlp/jaeger:
+  #   endpoint: JAEGER_HOST:4317
+  #   tls:
+  #     insecure: true
+
+  # ── Datadog (traces + métriques) ────────────────────────────────────────────
+  # datadog:
+  #   api:
+  #     key: ${DD_API_KEY}
+  #   host_metadata:
+  #     enabled: true
+
+  # ── Debug — affiche toutes les données dans les logs du Collector ────────────
+  debug:
+    verbosity: basic   # basic | normal | detailed
+
+service:
+  telemetry:
+    logs:
+      level: info
+
+  pipelines:
+    # Métriques : scrape Prometheus → Tempo (ou autre backend OTel)
+    metrics:
+      receivers:  [prometheus]
+      processors: [batch, resource]
+      exporters:  [debug, otlp/tempo]
+
+    # Traces : OTLP push d'Eimdall Central → Tempo
+    traces:
+      receivers:  [otlp]
+      processors: [batch, resource]
+      exporters:  [debug, otlp/tempo]
