@@ -1,8 +1,5 @@
-"""HTTP client for the Eimdall Edge local service (127.0.0.1:8787)."""
-from __future__ import annotations
-
+"""HTTP client for the Eimdall Edge local service."""
 import json
-import logging
 import ssl
 import time
 import urllib.error
@@ -10,21 +7,13 @@ import urllib.request
 from pathlib import Path
 from typing import Any, Dict, Optional
 
-logger = logging.getLogger(__name__)
-
 
 class EdgeClient:
-    """Thin HTTP client for the Eimdall Edge local API.
-
-    Connects to the Edge runtime running on the robot at the configured address.
-    Authentication uses a static token from a file on disk.
-    """
-
     def __init__(
         self,
-        edge_url: str = "https://127.0.0.1:8787",
+        edge_url: str = "http://127.0.0.1:8787",
         token_file: str = "/etc/eimdall/eimdall-local-service.token",
-        ca_cert: Optional[str] = "/etc/eimdall/tls/edge-local-ca.crt",
+        ca_cert: Optional[str] = None,
         timeout_s: float = 2.0,
     ) -> None:
         self._base = edge_url.rstrip("/")
@@ -36,8 +25,6 @@ class EdgeClient:
             raise FileNotFoundError(f"Edge token file not found: {token_file}")
         self._token = token_path.read_text().strip()
 
-    # ── Public API ──────────────────────────────────────────────────────────
-
     def ingest(
         self,
         robot_id: str,
@@ -45,36 +32,27 @@ class EdgeClient:
         sensor_id: str,
         family: str,
         values: Dict[str, float],
-        source: str = "ros2",
         ts_unix_ms: Optional[int] = None,
     ) -> bool:
-        payload = {
+        return self._post("/v1/local/bridge/ingest", {
             "robot_id": robot_id,
             "bridge_id": bridge_id,
-            "source": source,
+            "source": "ros2",
             "sensor_id": sensor_id,
             "family": family,
             "ts_unix_ms": ts_unix_ms or int(time.time() * 1000),
             "values": values,
-        }
-        return self._post("/v1/local/bridge/ingest", payload)
+        })
 
-    def heartbeat(
-        self,
-        robot_id: str,
-        bridge_id: str,
-        uptime_s: int = 0,
-        errors_5m: int = 0,
-    ) -> bool:
-        payload = {
+    def heartbeat(self, robot_id: str, bridge_id: str, uptime_s: int, errors_5m: int) -> bool:
+        return self._post("/v1/local/bridge/heartbeat", {
             "robot_id": robot_id,
             "bridge_id": bridge_id,
             "ts_unix_ms": int(time.time() * 1000),
             "status": "ok",
             "uptime_s": uptime_s,
             "errors_5m": errors_5m,
-        }
-        return self._post("/v1/local/bridge/heartbeat", payload)
+        })
 
     def ping(self) -> bool:
         try:
@@ -87,13 +65,10 @@ class EdgeClient:
         except Exception:
             return False
 
-    # ── Internal ────────────────────────────────────────────────────────────
-
     def _post(self, path: str, payload: Dict[str, Any]) -> bool:
-        body = json.dumps(payload).encode()
         req = urllib.request.Request(
             self._base + path,
-            data=body,
+            data=json.dumps(payload).encode(),
             headers={
                 "Content-Type": "application/json",
                 "X-Eimdall-Bridge-Token": self._token,
@@ -103,17 +78,18 @@ class EdgeClient:
         try:
             with urllib.request.urlopen(req, timeout=self._timeout, context=self._ssl_ctx) as resp:
                 return 200 <= resp.status < 300
-        except (urllib.error.URLError, OSError) as exc:
-            logger.debug("Edge ingest failed: %s", exc)
+        except (urllib.error.URLError, OSError):
             return False
 
     @staticmethod
     def _build_ssl(ca_cert: Optional[str]) -> Optional[ssl.SSLContext]:
-        if not ca_cert or not Path(ca_cert).exists():
-            ctx = ssl.create_default_context()
-            ctx.check_hostname = False
-            ctx.verify_mode = ssl.CERT_NONE
-            return ctx
+        if not ca_cert:
+            return None
+        ca_path = Path(ca_cert)
+        if not ca_path.exists():
+            raise FileNotFoundError(
+                f"CA cert '{ca_cert}' not found — refusing to disable TLS verification."
+            )
         ctx = ssl.create_default_context()
         ctx.load_verify_locations(cafile=ca_cert)
         return ctx

@@ -1,0 +1,10 @@
+builtin_interfaces/Time stamp
+float64 uptime_s
+int32 configured_sensors
+int32 active_sensors
+int32 total_reconnects
+int32 total_consecutive_errors
+int64 total_lines_seen
+int64 total_parse_errors
+int64 total_processed_values
+int64 total_anomaly_events

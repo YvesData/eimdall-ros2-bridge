@@ -1,8 +1,23 @@
-eimdall_bridge:
+eimdall_health_bridge:
+  ros__parameters:
+    health_path:         "/var/lib/eimdall/runtime_health.json"
+    publish_period_sec:  1.0
+
+eimdall_anomaly_bridge:
+  ros__parameters:
+    anomaly_path:        "/var/lib/eimdall/runtime_anomalies.jsonl"
+    poll_period_sec:     0.5
+
+eimdall_ingest_bridge:
   ros__parameters:
     robot_id:             "robot-01"
-    bridge_id:            "ros2-bridge"
-    edge_url:             "https://127.0.0.1:8787"
+    bridge_id:            "ros2-ingest"
+    edge_url:             "http://127.0.0.1:8787"
     token_file:           "/etc/eimdall/eimdall-local-service.token"
-    ca_cert:              "/etc/eimdall/tls/edge-local-ca.crt"
+    ca_cert:              ""
     heartbeat_interval_s: 5.0
+    imu_topic:            "/imu/data"
+    battery_topic:        "/battery_state"
+    odom_topic:           "/odom"
+    scan_topic:           "/scan"
+    joint_states_topic:   "/joint_states"
