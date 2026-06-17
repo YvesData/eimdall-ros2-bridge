@@ -1,8 +1,13 @@
 """IngestBridge — ROS 2 sensor topics → Eimdall Edge ingest."""
 import math
+import queue
 import re
+import threading
 import time
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
+
+# #596: bounded sender queue — drops oldest entries under high load (newest-wins)
+_INGEST_QUEUE_MAX = 500
 
 _SAFE_ID = re.compile(r"^[a-zA-Z0-9_\-\.]{1,64}$")
 _MAX_SCAN_SAMPLES = 1_000
@@ -63,6 +68,14 @@ class IngestBridge(LifecycleNode):
         self._errors: int = 0
         self._error_timestamps: List[float] = []  # for 5-min sliding window
 
+        # #596: producer/consumer queue — ROS callbacks push here (non-blocking),
+        # a dedicated sender thread drains it with synchronous HTTP calls.
+        self._ingest_queue: queue.Queue[Tuple[str, str, dict]] = queue.Queue(
+            maxsize=_INGEST_QUEUE_MAX
+        )
+        self._sender_thread: Optional[threading.Thread] = None
+        self._sender_stop = threading.Event()
+
     # ── Lifecycle callbacks ─────────────────────────────────────────────────
 
     def on_configure(self, state: State) -> TransitionCallbackReturn:
@@ -117,10 +130,25 @@ class IngestBridge(LifecycleNode):
         )
         self._hb_timer = self.create_timer(hb_interval, self._send_heartbeat)
         self._diag_timer = self.create_timer(5.0, self._publish_diagnostics)
+
+        # #596: start dedicated sender thread so ROS callbacks are never blocked by HTTP
+        self._sender_stop.clear()
+        self._sender_thread = threading.Thread(
+            target=self._send_loop, daemon=True, name="eimdall-ingest-sender"
+        )
+        self._sender_thread.start()
+
         self.get_logger().info("activated — listening on sensor topics")
         return TransitionCallbackReturn.SUCCESS
 
     def on_deactivate(self, state: State) -> TransitionCallbackReturn:
+        # Signal and join the sender thread before destroying subscriptions
+        self._sender_stop.set()
+        self._ingest_queue.put_nowait(None)  # type: ignore[arg-type]  # sentinel
+        if self._sender_thread is not None:
+            self._sender_thread.join(timeout=5.0)
+            self._sender_thread = None
+
         for sub in self._subs:
             self.destroy_subscription(sub)
         self._subs = []
@@ -244,20 +272,50 @@ class IngestBridge(LifecycleNode):
     # ── Internal ────────────────────────────────────────────────────────────
 
     def _ingest(self, sensor_id: str, family: str, values: dict) -> None:
+        """Push a reading onto the sender queue (non-blocking).
+
+        #596: never blocks the ROS callback thread. If the queue is full, the
+        oldest entry is dropped and a warning is emitted (newest-wins policy).
+        """
         if self._client is None:
             return
-        ok = self._client.ingest(
-            robot_id=self._robot_id,
-            bridge_id=self._bridge_id,
-            sensor_id=sensor_id,
-            family=family,
-            values=values,
-        )
-        if ok:
-            self._readings += 1
-        else:
-            self._errors += 1
-            self._error_timestamps.append(time.monotonic())
+        try:
+            self._ingest_queue.put_nowait((sensor_id, family, values))
+        except queue.Full:
+            # Queue saturated — drop oldest entry and retry once
+            try:
+                self._ingest_queue.get_nowait()
+            except queue.Empty:
+                pass
+            try:
+                self._ingest_queue.put_nowait((sensor_id, family, values))
+            except queue.Full:
+                self.get_logger().warn(
+                    f"ingest queue full — dropping reading from {sensor_id}"
+                )
+
+    def _send_loop(self) -> None:
+        """Sender thread: drains the ingest queue with synchronous HTTP calls."""
+        while not self._sender_stop.is_set():
+            try:
+                item = self._ingest_queue.get(timeout=1.0)
+            except queue.Empty:
+                continue
+            if item is None:  # sentinel — deactivating
+                break
+            sensor_id, family, values = item
+            ok = self._client.ingest(  # type: ignore[union-attr]
+                robot_id=self._robot_id,
+                bridge_id=self._bridge_id,
+                sensor_id=sensor_id,
+                family=family,
+                values=values,
+            )
+            if ok:
+                self._readings += 1
+            else:
+                self._errors += 1
+                self._error_timestamps.append(time.monotonic())
 
 
 def main(args=None) -> None:
