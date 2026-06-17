@@ -16,6 +16,17 @@ _ANOMALY_QOS = QoSProfile(
     depth=100,
 )
 
+_SEVERITY_MAP = {
+    "info": 1,
+    "low": 1,
+    "warning": 2,
+    "warn": 2,
+    "medium": 2,
+    "high": 3,
+    "critical": 4,
+    "error": 4,
+}
+
 
 class AnomalyBridge(LifecycleNode):
     def __init__(self) -> None:
@@ -126,10 +137,10 @@ class AnomalyBridge(LifecycleNode):
         msg.robot_id = str(payload.get("robot_id", ""))
         msg.tenant_id = str(payload.get("tenant_id", ""))
         msg.component = str(payload.get("component", ""))
-        msg.severity = int(payload.get("severity", 0))
+        msg.severity = _severity_to_int(payload.get("severity", 0))
         msg.score = float(payload.get("score", 0.0))
         rc = payload.get("reason_codes", [])
-        msg.reason_codes = list(rc) if isinstance(rc, list) else []
+        msg.reason_codes = [str(item) for item in rc] if isinstance(rc, list) else []
         return msg
 
     def _publish_diagnostics(self, ok: bool, message: str) -> None:
@@ -161,3 +172,14 @@ def main(args=None) -> None:
     finally:
         node.destroy_node()
         rclpy.shutdown()
+
+
+def _severity_to_int(value) -> int:
+    if isinstance(value, str):
+        value = value.strip().lower()
+        if value in _SEVERITY_MAP:
+            return _SEVERITY_MAP[value]
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return 0

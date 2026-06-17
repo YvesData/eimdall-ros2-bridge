@@ -53,6 +53,12 @@ def generate_launch_description() -> LaunchDescription:
             default_value="/etc/eimdall/eimdall-local-service.token",
         ),
         DeclareLaunchArgument("ca_cert", default_value=""),
+        DeclareLaunchArgument("heartbeat_interval_s", default_value="5.0"),
+        DeclareLaunchArgument("imu_topic", default_value="/imu/data"),
+        DeclareLaunchArgument("battery_topic", default_value="/battery_state"),
+        DeclareLaunchArgument("odom_topic", default_value="/odom"),
+        DeclareLaunchArgument("scan_topic", default_value="/scan"),
+        DeclareLaunchArgument("joint_states_topic", default_value="/joint_states"),
     ]
 
     # ── Lifecycle nodes ─────────────────────────────────────────────────────
@@ -89,6 +95,12 @@ def generate_launch_description() -> LaunchDescription:
             "edge_url": LaunchConfiguration("edge_url"),
             "token_file": LaunchConfiguration("token_file"),
             "ca_cert": LaunchConfiguration("ca_cert"),
+            "heartbeat_interval_s": LaunchConfiguration("heartbeat_interval_s"),
+            "imu_topic": LaunchConfiguration("imu_topic"),
+            "battery_topic": LaunchConfiguration("battery_topic"),
+            "odom_topic": LaunchConfiguration("odom_topic"),
+            "scan_topic": LaunchConfiguration("scan_topic"),
+            "joint_states_topic": LaunchConfiguration("joint_states_topic"),
         }],
     )
 

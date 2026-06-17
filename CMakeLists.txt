@@ -17,6 +17,13 @@ ament_python_install_package(${PROJECT_NAME})
 
 install(FILES package.xml README.md DESTINATION share/${PROJECT_NAME})
 install(DIRECTORY launch DESTINATION share/${PROJECT_NAME})
+install(DIRECTORY config DESTINATION share/${PROJECT_NAME})
+install(PROGRAMS
+  scripts/health_bridge
+  scripts/anomaly_bridge
+  scripts/ingest_bridge
+  DESTINATION lib/${PROJECT_NAME}
+)
 
 ament_export_dependencies(rosidl_default_runtime)
 ament_package()

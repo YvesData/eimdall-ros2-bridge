@@ -70,7 +70,7 @@ class IngestBridge(LifecycleNode):
 
         # #596: producer/consumer queue — ROS callbacks push here (non-blocking),
         # a dedicated sender thread drains it with synchronous HTTP calls.
-        self._ingest_queue: queue.Queue[Tuple[str, str, dict]] = queue.Queue(
+        self._ingest_queue: queue.Queue[Optional[Tuple[str, str, dict]]] = queue.Queue(
             maxsize=_INGEST_QUEUE_MAX
         )
         self._sender_thread: Optional[threading.Thread] = None
@@ -87,7 +87,7 @@ class IngestBridge(LifecycleNode):
 
         try:
             self._client = EdgeClient(edge_url=edge_url, token_file=token_file, ca_cert=ca_cert)
-        except FileNotFoundError as exc:
+        except (FileNotFoundError, ValueError) as exc:
             self.get_logger().error(f"configuration error: {exc}")
             return TransitionCallbackReturn.FAILURE
 
@@ -144,7 +144,7 @@ class IngestBridge(LifecycleNode):
     def on_deactivate(self, state: State) -> TransitionCallbackReturn:
         # Signal and join the sender thread before destroying subscriptions
         self._sender_stop.set()
-        self._ingest_queue.put_nowait(None)  # type: ignore[arg-type]  # sentinel
+        self._wake_sender()
         if self._sender_thread is not None:
             self._sender_thread.join(timeout=5.0)
             self._sender_thread = None
@@ -290,9 +290,22 @@ class IngestBridge(LifecycleNode):
             try:
                 self._ingest_queue.put_nowait((sensor_id, family, values))
             except queue.Full:
-                self.get_logger().warn(
+                self.get_logger().warning(
                     f"ingest queue full — dropping reading from {sensor_id}"
                 )
+
+    def _wake_sender(self) -> None:
+        try:
+            self._ingest_queue.put_nowait(None)
+        except queue.Full:
+            try:
+                self._ingest_queue.get_nowait()
+            except queue.Empty:
+                pass
+            try:
+                self._ingest_queue.put_nowait(None)
+            except queue.Full:
+                pass
 
     def _send_loop(self) -> None:
         """Sender thread: drains the ingest queue with synchronous HTTP calls."""

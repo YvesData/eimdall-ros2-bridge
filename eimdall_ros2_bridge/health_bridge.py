@@ -155,12 +155,17 @@ class HealthBridge(LifecycleNode):
                 continue
             msg = EimdallSensorStatus()
             msg.stamp = self.get_clock().now().to_msg()
-            msg.sensor_id = str(sensor.get("sensor_id", ""))
-            msg.family = str(sensor.get("family", ""))
-            msg.status = str(sensor.get("status", ""))
-            msg.confidence_pct = float(sensor.get("confidence_pct") or 0.0)
-            msg.recent_readings = int(sensor.get("recent_readings") or 0)
-            msg.last_reading_at_ms = int(sensor.get("last_reading_at_ms") or 0)
+            sensor_label = str(sensor.get("sensor_label") or sensor.get("sensor_id") or "")
+            msg.sensor_id = str(sensor.get("sensor_id") or sensor_label)
+            msg.family = str(sensor.get("family") or _family_from_label(sensor_label))
+            msg.status = str(sensor.get("status") or _status_from_edge_sensor(sensor))
+            msg.confidence_pct = float(sensor.get("confidence_pct") or _confidence_from_status(msg.status))
+            msg.recent_readings = int(
+                sensor.get("recent_readings") or sensor.get("processed_values") or 0
+            )
+            msg.last_reading_at_ms = int(
+                sensor.get("last_reading_at_ms") or sensor.get("last_line_ts_ms") or 0
+            )
             self._sensor_pub.publish(msg)
 
     def _publish_diagnostics(self, ok: bool, message: str) -> None:
@@ -192,3 +197,30 @@ def main(args=None) -> None:
     finally:
         node.destroy_node()
         rclpy.shutdown()
+
+
+def _family_from_label(sensor_label: str) -> str:
+    if ":" in sensor_label:
+        return sensor_label.split(":", 1)[0]
+    if "-" in sensor_label:
+        return sensor_label.split("-", 1)[0]
+    return sensor_label
+
+
+def _status_from_edge_sensor(sensor: dict[str, Any]) -> str:
+    if int(sensor.get("consecutive_errors") or 0) > 0:
+        return "warning"
+    if int(sensor.get("parse_errors") or 0) > 0:
+        return "warning"
+    if int(sensor.get("processed_values") or 0) == 0:
+        return "offline"
+    return "ok"
+
+
+def _confidence_from_status(status: str) -> float:
+    return {
+        "ok": 100.0,
+        "warning": 70.0,
+        "error": 40.0,
+        "offline": 0.0,
+    }.get(status, 50.0)
