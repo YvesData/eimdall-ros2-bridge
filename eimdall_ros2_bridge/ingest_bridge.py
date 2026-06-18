@@ -1,13 +1,20 @@
 """IngestBridge — ROS 2 sensor topics → Eimdall Edge ingest."""
+import collections
 import math
+import os
 import queue
 import re
+import stat
 import threading
 import time
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, Deque, List, Optional, Tuple
 
 # #596: bounded sender queue — drops oldest entries under high load (newest-wins)
 _INGEST_QUEUE_MAX = 500
+# #644: maximum serialised payload size accepted per ingest call (64 KiB)
+_MAX_PAYLOAD_BYTES = 65_536
+# #644: maximum messages per second per sensor topic before dropping
+_SENSOR_RATE_LIMIT = 200
 
 _SAFE_ID = re.compile(r"^[a-zA-Z0-9_\-\.]{1,64}$")
 _MAX_SCAN_SAMPLES = 1_000
@@ -55,6 +62,8 @@ class IngestBridge(LifecycleNode):
         self.declare_parameter("odom_topic", "/odom")
         self.declare_parameter("scan_topic", "/scan")
         self.declare_parameter("joint_states_topic", "/joint_states")
+        # #644: enforce token file security checks (symlink, permissions, ownership)
+        self.declare_parameter("strict_security", True)
 
         self._client: Optional[EdgeClient] = None
         self._robot_id: str = ""
@@ -75,8 +84,31 @@ class IngestBridge(LifecycleNode):
         )
         self._sender_thread: Optional[threading.Thread] = None
         self._sender_stop = threading.Event()
+        # #644: per-sensor sliding-window rate limiter (timestamps within 1-second window)
+        self._sensor_rate: Dict[str, collections.deque] = {}
 
     # ── Lifecycle callbacks ─────────────────────────────────────────────────
+
+    # ── Security helpers ────────────────────────────────────────────────────
+
+    def _validate_token_file(self, token_file: str) -> None:
+        """#644: refuse symlinked or world-readable token files."""
+        if os.path.islink(token_file):
+            raise RuntimeError(f"token_file is a symlink: {token_file}")
+        try:
+            st = os.stat(token_file)
+        except OSError as exc:
+            raise RuntimeError(f"cannot stat token_file '{token_file}': {exc}") from exc
+        if st.st_mode & 0o077:
+            raise RuntimeError(
+                f"token_file '{token_file}' permissions too broad: "
+                f"{oct(st.st_mode & 0o777)} — expected 0600"
+            )
+        if st.st_uid != os.getuid():
+            raise RuntimeError(
+                f"token_file '{token_file}' not owned by current user "
+                f"(owner uid={st.st_uid}, current uid={os.getuid()})"
+            )
 
     def on_configure(self, state: State) -> TransitionCallbackReturn:
         self._robot_id = self.get_parameter("robot_id").get_parameter_value().string_value
@@ -84,6 +116,15 @@ class IngestBridge(LifecycleNode):
         edge_url = self.get_parameter("edge_url").get_parameter_value().string_value
         token_file = self.get_parameter("token_file").get_parameter_value().string_value
         ca_cert = self.get_parameter("ca_cert").get_parameter_value().string_value or None
+        strict = self.get_parameter("strict_security").get_parameter_value().bool_value
+
+        # #644: validate token file security before reading it
+        if strict:
+            try:
+                self._validate_token_file(token_file)
+            except RuntimeError as exc:
+                self.get_logger().error(f"token file security check failed: {exc}")
+                return TransitionCallbackReturn.FAILURE
 
         try:
             self._client = EdgeClient(edge_url=edge_url, token_file=token_file, ca_cert=ca_cert)
@@ -157,6 +198,8 @@ class IngestBridge(LifecycleNode):
                 timer.cancel()
         self._hb_timer = None
         self._diag_timer = None
+        # #644: clear per-sensor rate buckets to free memory
+        self._sensor_rate.clear()
         self.get_logger().info("deactivated")
         return TransitionCallbackReturn.SUCCESS
 
@@ -276,9 +319,34 @@ class IngestBridge(LifecycleNode):
 
         #596: never blocks the ROS callback thread. If the queue is full, the
         oldest entry is dropped and a warning is emitted (newest-wins policy).
+        #644: payload size and per-sensor rate limit enforced before queuing.
         """
         if self._client is None:
             return
+
+        # #644: reject oversized payloads to prevent Edge bandwidth abuse
+        payload_size = sum(len(str(v)) for v in values.values())
+        if payload_size > _MAX_PAYLOAD_BYTES:
+            self.get_logger().warning(
+                f"ingest payload too large ({payload_size} B > {_MAX_PAYLOAD_BYTES} B) "
+                f"from sensor {sensor_id} — dropping"
+            )
+            return
+
+        # #644: per-sensor rate limit — prevents a misconfigured topic from flooding Edge
+        now_ts = time.monotonic()
+        if sensor_id not in self._sensor_rate:
+            self._sensor_rate[sensor_id] = collections.deque()
+        dq = self._sensor_rate[sensor_id]
+        while dq and now_ts - dq[0] > 1.0:
+            dq.popleft()
+        if len(dq) >= _SENSOR_RATE_LIMIT:
+            self.get_logger().warning(
+                f"rate limit exceeded for sensor {sensor_id} ({_SENSOR_RATE_LIMIT} msg/s) — dropping"
+            )
+            return
+        dq.append(now_ts)
+
         try:
             self._ingest_queue.put_nowait((sensor_id, family, values))
         except queue.Full:
