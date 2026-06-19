@@ -28,17 +28,22 @@ _SEVERITY_MAP = {
 }
 
 
+_DEFAULT_MAX_ANOMALIES_PER_TICK = 200
+
+
 class AnomalyBridge(LifecycleNode):
     def __init__(self) -> None:
         super().__init__("eimdall_anomaly_bridge")
         self.declare_parameter("anomaly_path", "runtime_anomalies.jsonl")
         self.declare_parameter("poll_period_sec", 0.5)
+        self.declare_parameter("max_anomalies_per_tick", _DEFAULT_MAX_ANOMALIES_PER_TICK)
 
         self._pub = None
         self._diag_pub = None
         self._timer = None
         self._anomaly_path: Optional[Path] = None
         self._poll_period: float = 0.5
+        self._max_anomalies_per_tick: int = _DEFAULT_MAX_ANOMALIES_PER_TICK
         self._offset: int = 0
         self._last_inode: Optional[int] = None
         self._events_published: int = 0
@@ -55,6 +60,9 @@ class AnomalyBridge(LifecycleNode):
             return TransitionCallbackReturn.FAILURE
         self._poll_period = (
             self.get_parameter("poll_period_sec").get_parameter_value().double_value
+        )
+        self._max_anomalies_per_tick = (
+            self.get_parameter("max_anomalies_per_tick").get_parameter_value().integer_value
         )
         self._pub = self.create_lifecycle_publisher(EimdallAnomaly, "/eimdall/anomalies", _ANOMALY_QOS)
         self._diag_pub = self.create_publisher(DiagnosticArray, "/diagnostics", 10)
@@ -101,9 +109,17 @@ class AnomalyBridge(LifecycleNode):
                 self._offset = 0
             self._last_inode = stat.st_ino
 
+            tick_count = 0
             with self._anomaly_path.open("r", encoding="utf-8") as fh:
                 fh.seek(self._offset)
                 while True:
+                    if tick_count >= self._max_anomalies_per_tick:
+                        self.get_logger().warning(
+                            f"anomaly backlog: processed {tick_count} events this tick "
+                            f"(limit={self._max_anomalies_per_tick}) — will resume next tick"
+                        )
+                        # Do NOT advance offset further; resume next tick.
+                        break
                     line = fh.readline()
                     if not line:
                         break
@@ -115,12 +131,14 @@ class AnomalyBridge(LifecycleNode):
                         payload = json.loads(line)
                         self._pub.publish(self._build_msg(payload))
                         self._events_published += 1
+                        tick_count += 1
                     except Exception as exc:
                         self._errors += 1
                         self.get_logger().error(f"parse error: {exc}")
 
             self._publish_diagnostics(
-                ok=True, message=f"published {self._events_published} total events"
+                ok=True,
+                message=f"published {self._events_published} total events (tick: {tick_count})",
             )
 
         except Exception as exc:

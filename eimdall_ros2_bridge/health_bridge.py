@@ -19,6 +19,7 @@ _HEALTH_QOS = QoSProfile(
 
 _MAX_JSON_RETRIES = 3
 _RETRY_DELAY_S = 0.05
+_DEFAULT_MAX_HEALTH_FILE_BYTES = 1_048_576  # 1 MiB
 
 
 class HealthBridge(LifecycleNode):
@@ -26,6 +27,7 @@ class HealthBridge(LifecycleNode):
         super().__init__("eimdall_health_bridge")
         self.declare_parameter("health_path", "runtime_health.json")
         self.declare_parameter("publish_period_sec", 1.0)
+        self.declare_parameter("max_file_bytes", _DEFAULT_MAX_HEALTH_FILE_BYTES)
 
         self._health_pub = None
         self._sensor_pub = None
@@ -33,6 +35,7 @@ class HealthBridge(LifecycleNode):
         self._timer = None
         self._health_path: Optional[Path] = None
         self._publish_period: float = 1.0
+        self._max_file_bytes: int = _DEFAULT_MAX_HEALTH_FILE_BYTES
         self._last_raw: Optional[str] = None
         self._ticks: int = 0
         self._parse_errors: int = 0
@@ -49,6 +52,9 @@ class HealthBridge(LifecycleNode):
             return TransitionCallbackReturn.FAILURE
         self._publish_period = (
             self.get_parameter("publish_period_sec").get_parameter_value().double_value
+        )
+        self._max_file_bytes = (
+            self.get_parameter("max_file_bytes").get_parameter_value().integer_value
         )
         self._health_pub = self.create_lifecycle_publisher(EimdallHealth, "/eimdall/health", _HEALTH_QOS)
         self._sensor_pub = self.create_lifecycle_publisher(
@@ -90,6 +96,16 @@ class HealthBridge(LifecycleNode):
             return
 
         try:
+            file_size = self._health_path.stat().st_size
+            if file_size > self._max_file_bytes:
+                self._publish_diagnostics(
+                    ok=False,
+                    message=f"health file too large ({file_size} B > {self._max_file_bytes} B limit)",
+                )
+                self.get_logger().warning(
+                    f"health file exceeds limit ({file_size} B) — skipping tick (backpressure)"
+                )
+                return
             raw = self._health_path.read_text(encoding="utf-8")
         except OSError as exc:
             self._publish_diagnostics(ok=False, message=str(exc))
