@@ -40,6 +40,7 @@ class HealthBridge(LifecycleNode):
         self._ticks: int = 0
         self._parse_errors: int = 0
         self._publishes: int = 0
+        self._oversize_ticks: int = 0  # #688: consecutive ticks with oversized file
 
     # ── Lifecycle callbacks ─────────────────────────────────────────────────
 
@@ -98,14 +99,33 @@ class HealthBridge(LifecycleNode):
         try:
             file_size = self._health_path.stat().st_size
             if file_size > self._max_file_bytes:
+                self._oversize_ticks += 1
+                # #688: after 3 consecutive oversize ticks, rotate the file to self-recover.
+                _OVERSIZE_ROTATE_AFTER = 3
                 self._publish_diagnostics(
                     ok=False,
-                    message=f"health file too large ({file_size} B > {self._max_file_bytes} B limit)",
+                    message=(
+                        f"health file too large ({file_size} B > {self._max_file_bytes} B), "
+                        f"tick {self._oversize_ticks}/{_OVERSIZE_ROTATE_AFTER}"
+                    ),
                 )
-                self.get_logger().warning(
-                    f"health file exceeds limit ({file_size} B) — skipping tick (backpressure)"
-                )
+                if self._oversize_ticks >= _OVERSIZE_ROTATE_AFTER:
+                    backup = self._health_path.with_suffix(".oversize.bak")
+                    try:
+                        self._health_path.rename(backup)
+                        self.get_logger().error(
+                            "Health file rotated to %s after %d consecutive oversize ticks",
+                            backup, self._oversize_ticks,
+                        )
+                    except OSError as rot_exc:
+                        self.get_logger().error("Failed to rotate oversized health file: %s", rot_exc)
+                    self._oversize_ticks = 0
+                else:
+                    self.get_logger().warning(
+                        "health file exceeds limit (%d B) — skipping tick (backpressure)", file_size
+                    )
                 return
+            self._oversize_ticks = 0  # reset on normal tick
             raw = self._health_path.read_text(encoding="utf-8")
         except OSError as exc:
             self._publish_diagnostics(ok=False, message=str(exc))
