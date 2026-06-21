@@ -1,5 +1,4 @@
 import json
-import time
 from pathlib import Path
 from typing import Any, Optional
 
@@ -18,7 +17,6 @@ _HEALTH_QOS = QoSProfile(
 )
 
 _MAX_JSON_RETRIES = 3
-_RETRY_DELAY_S = 0.05
 _DEFAULT_MAX_HEALTH_FILE_BYTES = 1_048_576  # 1 MiB
 
 
@@ -61,7 +59,7 @@ class HealthBridge(LifecycleNode):
         self._sensor_pub = self.create_lifecycle_publisher(
             EimdallSensorStatus, "/eimdall/sensors/status", _HEALTH_QOS
         )
-        self._diag_pub = self.create_publisher(DiagnosticArray, "/diagnostics", 10)
+        self._diag_pub = self.create_lifecycle_publisher(DiagnosticArray, "/diagnostics", 10)  # #22
         self.get_logger().info(f"configured: health_path={self._health_path}")
         return TransitionCallbackReturn.SUCCESS
 
@@ -78,10 +76,18 @@ class HealthBridge(LifecycleNode):
         return TransitionCallbackReturn.SUCCESS
 
     def on_cleanup(self, state: State) -> TransitionCallbackReturn:
+        # #19: destroy publishers before releasing references
+        for pub in (self._health_pub, self._sensor_pub, self._diag_pub):
+            if pub is not None:
+                self.destroy_publisher(pub)
+        self._health_pub = None
+        self._sensor_pub = None
+        self._diag_pub = None
         self._last_raw = None
         self._ticks = 0
         self._parse_errors = 0
         self._publishes = 0
+        self._oversize_ticks = 0  # #19: reset oversize counter
         self.get_logger().info("cleaned up")
         return TransitionCallbackReturn.SUCCESS
 
@@ -147,7 +153,8 @@ class HealthBridge(LifecycleNode):
                 break
             except json.JSONDecodeError:
                 if attempt < _MAX_JSON_RETRIES - 1:
-                    time.sleep(_RETRY_DELAY_S)
+                    # #18: no sleep — partial writes resolve in <1 ms on local fs;
+                    # sleeping here would block the ROS executor thread.
                     try:
                         raw = self._health_path.read_text(encoding="utf-8")
                     except OSError:

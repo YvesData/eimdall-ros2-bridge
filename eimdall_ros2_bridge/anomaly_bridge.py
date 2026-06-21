@@ -82,6 +82,13 @@ class AnomalyBridge(LifecycleNode):
         return TransitionCallbackReturn.SUCCESS
 
     def on_cleanup(self, state: State) -> TransitionCallbackReturn:
+        # #20: destroy publishers before releasing references
+        if self._pub is not None:
+            self.destroy_publisher(self._pub)
+            self._pub = None
+        if self._diag_pub is not None:
+            self.destroy_publisher(self._diag_pub)
+            self._diag_pub = None
         self._offset = 0
         self._last_inode = None
         self._events_published = 0

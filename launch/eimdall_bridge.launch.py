@@ -45,6 +45,16 @@ def generate_launch_description() -> LaunchDescription:
         DeclareLaunchArgument("anomaly_path", default_value="runtime_anomalies.jsonl"),
         DeclareLaunchArgument("publish_period_sec", default_value="1.0"),
         DeclareLaunchArgument("poll_period_sec", default_value="0.5"),
+        DeclareLaunchArgument(
+            "max_file_bytes",
+            default_value="1048576",
+            description="Maximum health JSON file size in bytes before oversize handling (default: 1 MiB)",
+        ),
+        DeclareLaunchArgument(
+            "max_anomalies_per_tick",
+            default_value="200",
+            description="Maximum anomaly events processed per poll tick (default: 200)",
+        ),
         DeclareLaunchArgument("robot_id", default_value="robot-01"),
         DeclareLaunchArgument("bridge_id", default_value="ros2-ingest"),
         DeclareLaunchArgument("edge_url", default_value="http://127.0.0.1:8787"),
@@ -70,6 +80,7 @@ def generate_launch_description() -> LaunchDescription:
         parameters=[{
             "health_path": LaunchConfiguration("health_path"),
             "publish_period_sec": LaunchConfiguration("publish_period_sec"),
+            "max_file_bytes": LaunchConfiguration("max_file_bytes"),
         }],
     )
 
@@ -81,6 +92,7 @@ def generate_launch_description() -> LaunchDescription:
         parameters=[{
             "anomaly_path": LaunchConfiguration("anomaly_path"),
             "poll_period_sec": LaunchConfiguration("poll_period_sec"),
+            "max_anomalies_per_tick": LaunchConfiguration("max_anomalies_per_tick"),
         }],
     )
 

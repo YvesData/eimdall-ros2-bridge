@@ -2,11 +2,13 @@ eimdall_health_bridge:
   ros__parameters:
     health_path:         "/var/lib/eimdall/runtime_health.json"
     publish_period_sec:  1.0
+    # max_file_bytes: 1048576  # Maximum health JSON file size in bytes (default: 1 MiB)
 
 eimdall_anomaly_bridge:
   ros__parameters:
     anomaly_path:        "/var/lib/eimdall/runtime_anomalies.jsonl"
     poll_period_sec:     0.5
+    # max_anomalies_per_tick: 200  # Maximum anomaly events processed per poll tick (default: 200)
 
 eimdall_ingest_bridge:
   ros__parameters:

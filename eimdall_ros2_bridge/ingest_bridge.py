@@ -65,6 +65,7 @@ class IngestBridge(LifecycleNode):
         # #644: enforce token file security checks (symlink, permissions, ownership)
         self.declare_parameter("strict_security", True)
 
+        self._lock = threading.Lock()  # #17: guards _error_timestamps across threads
         self._client: Optional[EdgeClient] = None
         self._robot_id: str = ""
         self._bridge_id: str = ""
@@ -206,6 +207,8 @@ class IngestBridge(LifecycleNode):
     def on_cleanup(self, state: State) -> TransitionCallbackReturn:
         self._readings = 0
         self._errors = 0
+        with self._lock:  # #21: reset sliding window on cleanup
+            self._error_timestamps = []
         self.get_logger().info("cleaned up")
         return TransitionCallbackReturn.SUCCESS
 
@@ -229,10 +232,14 @@ class IngestBridge(LifecycleNode):
             self._ingest("imu", "imu", values)
 
     def _on_battery(self, msg: BatteryState) -> None:
+        # #24: validate percentage range before converting to avoid nonsensical SoC values
+        if not (0.0 <= msg.percentage <= 1.0):
+            self.get_logger().warning('BatteryState.percentage out of range: %.3f', msg.percentage)
+        soc_pct = max(0.0, min(100.0, msg.percentage * 100.0))
         values = _safe_values({
             "voltage_v": msg.voltage,
             "current_a": msg.current,
-            "soc_pct": msg.percentage * 100.0,
+            "soc_pct": soc_pct,
             "temp_c": msg.temperature,
         })
         if values:
@@ -282,8 +289,9 @@ class IngestBridge(LifecycleNode):
         uptime = int(time.monotonic() - self._start_ts)
         now = time.monotonic()
         cutoff = now - _ERRORS_WINDOW_S
-        self._error_timestamps = [t for t in self._error_timestamps if t > cutoff]
-        errors_5m = len(self._error_timestamps)
+        with self._lock:  # #17: thread-safe read + prune of sliding window
+            self._error_timestamps = [t for t in self._error_timestamps if t > cutoff]
+            errors_5m = len(self._error_timestamps)
         ok = self._client.heartbeat(
             robot_id=self._robot_id,
             bridge_id=self._bridge_id,
@@ -396,7 +404,8 @@ class IngestBridge(LifecycleNode):
                 self._readings += 1
             else:
                 self._errors += 1
-                self._error_timestamps.append(time.monotonic())
+                with self._lock:  # #17: thread-safe append to sliding window
+                    self._error_timestamps.append(time.monotonic())
 
 
 def main(args=None) -> None:
