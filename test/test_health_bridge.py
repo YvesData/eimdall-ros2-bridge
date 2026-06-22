@@ -163,6 +163,27 @@ def test_tick_invalid_json_increments_parse_errors(tmp_path: Path) -> None:
     bridge._health_pub.publish.assert_not_called()
 
 
+def test_tick_keeps_last_snapshot_until_fragmented_write_completes(tmp_path: Path) -> None:
+    bridge = _configured_bridge(tmp_path)
+    health_path = tmp_path / "health.json"
+    health_path.write_text(json.dumps(_MINIMAL_HEALTH), encoding="utf-8")
+    bridge._tick()
+    last_raw = bridge._last_raw
+    publishes = bridge._publishes
+
+    health_path.write_text('{"uptime_s": 43, "sensors": [', encoding="utf-8")
+    bridge._tick()
+    assert bridge._last_raw == last_raw
+    assert bridge._publishes == publishes
+    assert bridge._parse_errors == 1
+
+    completed = {**_MINIMAL_HEALTH, "uptime_s": 43}
+    health_path.write_text(json.dumps(completed), encoding="utf-8")
+    bridge._tick()
+    assert bridge._publishes == publishes + 1
+    assert bridge._last_raw == json.dumps(completed)
+
+
 # ── _tick: oversize file ──────────────────────────────────────────────────────
 
 def test_tick_oversize_file_no_publish(tmp_path: Path) -> None:

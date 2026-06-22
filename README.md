@@ -278,6 +278,26 @@ Replace `EIMDALL_HOST` and `GRAFANA_TEMPO_HOST` placeholders with your actual ho
 
 ---
 
+## Tests
+
+Depuis la racine du package :
+
+```bash
+python3 -m compileall -q eimdall_ros2_bridge launch scripts
+python3 -m pytest -q
+```
+
+Dans un workspace ROS 2 Humble :
+
+```bash
+colcon test --packages-select eimdall_ros2_bridge
+colcon test-result --verbose
+```
+
+Ces commandes sont également exécutées par le workflow CI du dépôt.
+
+---
+
 ## Repository layout
 
 ```text

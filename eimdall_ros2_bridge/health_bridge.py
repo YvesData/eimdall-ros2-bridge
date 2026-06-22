@@ -16,7 +16,6 @@ _HEALTH_QOS = QoSProfile(
     depth=10,
 )
 
-_MAX_JSON_RETRIES = 3
 _DEFAULT_MAX_HEALTH_FILE_BYTES = 1_048_576  # 1 MiB
 
 
@@ -145,25 +144,17 @@ class HealthBridge(LifecycleNode):
         if raw == self._last_raw:
             return
 
-        # Retry loop guards against partial writes / truncation mid-write
-        payload: Optional[dict] = None
-        for attempt in range(_MAX_JSON_RETRIES):
-            try:
-                payload = json.loads(raw)
-                break
-            except (json.JSONDecodeError, UnicodeDecodeError):
-                if attempt < _MAX_JSON_RETRIES - 1:
-                    # #18: no sleep — partial writes resolve in <1 ms on local fs;
-                    # sleeping here would block the ROS executor thread.
-                    try:
-                        raw = self._health_path.read_text(encoding="utf-8")
-                    except OSError:
-                        break
-
-        if payload is None:
+        try:
+            payload = json.loads(raw)
+        except (json.JSONDecodeError, UnicodeDecodeError):
             self._parse_errors += 1
-            self._publish_diagnostics(ok=False, message="JSON parse failed after retries")
-            self.get_logger().error(f"failed to parse health JSON after {_MAX_JSON_RETRIES} attempts")
+            self._publish_diagnostics(
+                ok=False,
+                message="JSON parse deferred until next health tick",
+            )
+            self.get_logger().warning(
+                "health JSON is incomplete or invalid — keeping the last valid snapshot"
+            )
             return
 
         self._publish_global_health(payload)
