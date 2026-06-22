@@ -13,7 +13,7 @@ _ANOMALY_QOS = QoSProfile(
     reliability=ReliabilityPolicy.RELIABLE,
     durability=DurabilityPolicy.TRANSIENT_LOCAL,
     history=HistoryPolicy.KEEP_LAST,
-    depth=100,
+    depth=10,
 )
 
 _SEVERITY_MAP = {
@@ -131,6 +131,7 @@ class AnomalyBridge(LifecycleNode):
                     if not line:
                         break
                     self._offset = fh.tell()
+                    tick_count += 1
                     line = line.strip()
                     if not line:
                         continue
@@ -138,7 +139,6 @@ class AnomalyBridge(LifecycleNode):
                         payload = json.loads(line)
                         self._pub.publish(self._build_msg(payload))
                         self._events_published += 1
-                        tick_count += 1
                     except Exception as exc:
                         self._errors += 1
                         self.get_logger().error(f"parse error: {exc}")

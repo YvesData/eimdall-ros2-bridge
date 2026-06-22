@@ -10,7 +10,7 @@ from diagnostic_msgs.msg import DiagnosticArray, DiagnosticStatus, KeyValue
 from eimdall_ros2_bridge.msg import EimdallHealth, EimdallSensorStatus
 
 _HEALTH_QOS = QoSProfile(
-    reliability=ReliabilityPolicy.RELIABLE,
+    reliability=ReliabilityPolicy.BEST_EFFORT,
     durability=DurabilityPolicy.VOLATILE,
     history=HistoryPolicy.KEEP_LAST,
     depth=10,
@@ -151,7 +151,7 @@ class HealthBridge(LifecycleNode):
             try:
                 payload = json.loads(raw)
                 break
-            except json.JSONDecodeError:
+            except (json.JSONDecodeError, UnicodeDecodeError):
                 if attempt < _MAX_JSON_RETRIES - 1:
                     # #18: no sleep — partial writes resolve in <1 ms on local fs;
                     # sleeping here would block the ROS executor thread.
