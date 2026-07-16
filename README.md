@@ -2,6 +2,8 @@
 
 ROS 2 bridge for the [Eimdall](https://github.com/YvesData/eimdall) edge runtime.
 
+> New here? See [docs/dev-guide.md](docs/dev-guide.md) for a detailed contributor guide (lifecycle nodes, edge_client hardening, build/test paths, known gotchas).
+
 Three managed lifecycle nodes connect the Eimdall Edge process to any ROS 2 system:
 
 - **`health_bridge`** — polls `runtime_health.json` and publishes typed health messages
